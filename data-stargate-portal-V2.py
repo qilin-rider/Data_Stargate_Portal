@@ -21,7 +21,7 @@ except ImportError:
     IN_COLAB = False
 
 # Set mpmath precision
-mpmath.mp.dps = 1000  # Reduced for speed
+mpmath.mp.dps = 500  # Reduced for speed
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,
@@ -35,7 +35,7 @@ logger = logging.getLogger()
 # Cache for mpmath results
 MPMATH_CACHE = {}
 
-def get_prime_reciprocal(p, max_digits=1000):
+def get_prime_reciprocal(p, max_digits=500):
     try:
         frac = Fraction(1, p)
         decimal_str = str(frac)
@@ -51,17 +51,29 @@ def get_prime_reciprocal(p, max_digits=1000):
         logger.error(f"Error in get_prime_reciprocal(p={p}): {e}")
         return "0" * max_digits
 
-def get_pi(max_digits=1000):
+def get_pi(max_digits=500):
     return MPMATH_CACHE.setdefault('pi', mpmath.mp.pi().__str__().replace('.', '')[:max_digits])
 
-def get_sqrt2(max_digits=1000):
+def get_sqrt2(max_digits=500):
     return MPMATH_CACHE.setdefault('sqrt2', mpmath.mp.sqrt(2).__str__().replace('.', '')[:max_digits])
 
-def get_e(max_digits=1000):
+def get_e(max_digits=500):
     return MPMATH_CACHE.setdefault('e', mpmath.mp.e().__str__().replace('.', '')[:max_digits])
 
-def get_phi(max_digits=1000):
+def get_phi(max_digits=500):
     return MPMATH_CACHE.setdefault('phi', mpmath.mp.phi().__str__().replace('.', '')[:max_digits])
+
+def get_logistic_0_1(max_digits=500):
+    return logistic_map(0.1, 3.9, max_digits)
+
+def sin_sequence(max_digits=500):
+    return ''.join('1' if mpmath.sin(n/100) > 0 else '0' for n in range(max_digits))
+
+def get_cf_sqrt2(max_digits=500):
+    return continued_fraction(mpmath.mp.sqrt(2), max_digits)
+
+def get_fib_7(max_digits=500):
+    return fibonacci_modulo(7, max_digits)
 
 def logistic_map(x0, r, n):
     try:
@@ -75,10 +87,7 @@ def logistic_map(x0, r, n):
         logger.error(f"Error in logistic_map(x0={x0}, r={r}): {e}")
         return "0" * n
 
-def sin_sequence(max_digits=1000):
-    return ''.join('1' if mpmath.sin(n/100) > 0 else '0' for n in range(max_digits))
-
-def continued_fraction(n, max_terms=1000):
+def continued_fraction(n, max_terms=500):
     try:
         seq = []
         x = n
@@ -103,85 +112,94 @@ def fibonacci_modulo(p, n):
         logger.error(f"Error in fibonacci_modulo(p={p}): {e}")
         return "0" * n
 
-def build_dictionary(max_digits=1000, chunk_sizes=[16, 32, 64, 128, 256, 512]):
+def build_dictionary(max_digits=500, chunk_sizes=[16, 32, 64, 128, 256, 512], timeout=60):
     dictionary_file = 'dictionary.pkl'
     dictionary = defaultdict(lambda: defaultdict(list))
     start_time = time.time()
     last_log = start_time
+    
+    # Check for existing dictionary
+    if Path(dictionary_file).exists():
+        try:
+            with open(dictionary_file, 'rb') as f:
+                dictionary = pickle.load(f)
+            logger.info(f"Loaded dictionary from {dictionary_file} with {sum(len(v) for v in dictionary.values())} chunks.")
+            print(f"Loaded dictionary from {dictionary_file}")
+            return dictionary
+        except Exception as e:
+            logger.error(f"Error loading dictionary: {e}")
     
     # Initialize logs
     logger.info("Starting dictionary build...")
     with open('stargate_log.txt', 'w') as f:
         f.write(f"[{time.ctime()}] Starting dictionary build...\n")
     
-    if Path(dictionary_file).exists():
-        try:
-            with open(dictionary_file, 'rb') as f:
-                dictionary = pickle.load(f)
-            logger.info(f"Loaded dictionary with {sum(len(v) for v in dictionary.values())} chunks.")
-        except Exception as e:
-            logger.error(f"Error loading dictionary: {e}")
+    # Build 16-bit dictionary
+    logger.info("Building 16-bit dictionary...")
+    primes = [7, 11, 13, 17, 19]
+    functions = [
+        ('pi', get_pi),
+        ('sqrt2', get_sqrt2),
+        ('e', get_e),
+        ('phi', get_phi),
+        ('logistic_0.1', get_logistic_0_1),
+        ('sin', sin_sequence),
+        ('cf_sqrt2', get_cf_sqrt2),
+        ('fib_7', get_fib_7)
+    ]
     
-    # Build 16-bit dictionary if empty
-    if not dictionary[16]:
-        logger.info("Building 16-bit dictionary...")
-        primes = [7, 11, 13, 17, 19]  # Limited for speed
-        functions = [
-            ('pi', get_pi),
-            ('sqrt2', get_sqrt2),
-            ('e', get_e),
-            ('phi', get_phi),
-            ('logistic_0.1', lambda: logistic_map(0.1, 3.9, max_digits)),
-            ('sin', sin_sequence),
-            ('cf_sqrt2', lambda: continued_fraction(mpmath.mp.sqrt(2), max_digits)),
-            ('fib_7', lambda: fibonacci_modulo(7, max_digits))
-        ]
-        
-        # Exhaustive 16-bit sequences
-        for i in range(2**16):
-            chunk = format(i, '016b')
-            dictionary[16][chunk].append(f"enum.{i}.cs16")
-            if i % 10000 == 0:
-                elapsed = time.time() - start_time
-                cpu = psutil.cpu_percent()
-                mem = psutil.virtual_memory().percent
-                logger.info(f"16-bit enum: {i} chunks, {elapsed:.2f}s, CPU: {cpu}%, Mem: {mem}%")
-                if elapsed - last_log >= 1:
-                    print(f"Building 16-bit enum: {i} chunks, {elapsed:.2f}s")
-                    last_log = elapsed
-        
-        # Transcendental sequences
-        for p in primes:
-            seq = get_prime_reciprocal(p, max_digits)
-            for i in range(0, len(seq) - 16 + 1, 16):
-                chunk = seq[i:i+16]
-                dictionary[16][chunk].append(f"1/{p}.{i}.{i+16}")
+    # Exhaustive 16-bit sequences
+    for i in range(2**16):
+        chunk = format(i, '016b')
+        dictionary[16][chunk].append(f"enum.{i}.cs16")
+        if i % 10000 == 0:
             elapsed = time.time() - start_time
-            logger.info(f"Prime 1/{p}: {len(dictionary[16])} chunks, {elapsed:.2f}s")
-            if elapsed - last_log >= 1:
-                print(f"Prime 1/{p}: {len(dictionary[16])} chunks, {elapsed:.2f}s")
-                last_log = elapsed
-        
-        for func_name, func in functions:
-            seq = func()
-            for i in range(0, len(seq) - 16 + 1, 16):
-                chunk = seq[i:i+16]
-                dictionary[16][chunk].append(f"{func_name}.{i}.{i+16}")
-            elapsed = time.time() - start_time
-            logger.info(f"Function {func_name}: {len(dictionary[16])} chunks, {elapsed:.2f}s")
-            if elapsed - last_log >= 1:
-                print(f"Function {func_name}: {len(dictionary[16])} chunks, {elapsed:.2f}s")
-                last_log = elapsed
-        
-        # Save dictionary
-        try:
-            with open(dictionary_file, 'wb') as f:
-                pickle.dump(dictionary, f)
-            logger.info(f"Saved dictionary with {len(dictionary[16])} 16-bit chunks.")
-            if IN_COLAB:
-                files.download(dictionary_file)
-        except Exception as e:
-            logger.error(f"Error saving dictionary: {e}")
+            cpu = psutil.cpu_percent()
+            mem = psutil.virtual_memory().percent
+            logger.info(f"16-bit enum: {i} chunks, {elapsed:.2f}s, CPU: {cpu}%, Mem: {mem}%")
+            print(f"Building 16-bit enum: {i} chunks, {elapsed:.2f}s")
+            last_log = elapsed
+        if elapsed > timeout:
+            logger.warning("Timeout reached during 16-bit enum build.")
+            break
+    
+    # Transcendental sequences
+    for p in primes:
+        seq = get_prime_reciprocal(p, max_digits)
+        for i in range(0, min(100, len(seq) - 16 + 1), 16):  # Limit to 100
+            chunk = seq[i:i+16]
+            dictionary[16][chunk].append(f"1/{p}.{i}.{i+16}")
+        elapsed = time.time() - start_time
+        logger.info(f"Prime 1/{p}: {len(dictionary[16])} chunks, {elapsed:.2f}s")
+        print(f"Prime 1/{p}: {len(dictionary[16])} chunks, {elapsed:.2f}s")
+        last_log = elapsed
+        if elapsed > timeout:
+            logger.warning("Timeout reached during prime sequences.")
+            break
+    
+    for func_name, func in functions:
+        seq = func(max_digits)
+        for i in range(0, min(100, len(seq) - 16 + 1), 16):
+            chunk = seq[i:i+16]
+            dictionary[16][chunk].append(f"{func_name}.{i}.{i+16}")
+        elapsed = time.time() - start_time
+        logger.info(f"Function {func_name}: {len(dictionary[16])} chunks, {elapsed:.2f}s")
+        print(f"Function {func_name}: {len(dictionary[16])} chunks, {elapsed:.2f}s")
+        last_log = elapsed
+        if elapsed > timeout:
+            logger.warning(f"Timeout reached during {func_name} sequences.")
+            break
+    
+    # Save dictionary
+    try:
+        with open(dictionary_file, 'wb') as f:
+            pickle.dump(dictionary, f)
+        logger.info(f"Saved dictionary to {dictionary_file} with {len(dictionary[16])} 16-bit chunks.")
+        print(f"Saved dictionary to {dictionary_file}")
+        if IN_COLAB:
+            files.download(dictionary_file)
+    except Exception as e:
+        logger.error(f"Error saving dictionary: {e}")
     
     report_dictionary(dictionary)
     
@@ -191,8 +209,8 @@ def build_dictionary(max_digits=1000, chunk_sizes=[16, 32, 64, 128, 256, 512]):
             continue
         num_16bit = chunk_size // 16
         base_chunks = list(dictionary[16].keys())
-        for i in range(min(100, len(base_chunks))):
-            for combo in itertools.combinations_with_replacement(base_chunks[:100], num_16bit):
+        for i in range(min(50, len(base_chunks))):  # Reduced to prevent overload
+            for combo in itertools.combinations_with_replacement(base_chunks[:50], num_16bit):
                 chunk = ''.join(combo)
                 if len(chunk) == chunk_size:
                     keys = [dictionary[16][c][0] for c in combo]
@@ -205,6 +223,11 @@ def build_dictionary(max_digits=1000, chunk_sizes=[16, 32, 64, 128, 256, 512]):
                     logger.info(f"Chunk Size {chunk_size}: {total_chunks} chunks, {elapsed:.2f}s, CPU: {cpu}%, Mem: {mem}%")
                     print(f"Building {chunk_size}-bit: {total_chunks} chunks, {elapsed:.2f}s")
                     last_log = elapsed
+                if elapsed > timeout:
+                    logger.warning(f"Timeout reached during {chunk_size}-bit sequences.")
+                    break
+            if elapsed > timeout:
+                break
     
     elapsed = time.time() - start_time
     total_chunks = sum(len(v) for v in dictionary.values())
@@ -370,18 +393,18 @@ def server_mode(dictionary, port=12345):
                             seq += format(int(f_start), '016b')
                         elif f_name.startswith('1/'):
                             p = int(f_name.split('/')[1])
-                            seq += get_prime_reciprocal(p, 1000)[f_start:f_end]
+                            seq += get_prime_reciprocal(p, 500)[f_start:f_end]
                         elif f_name in ['pi', 'sqrt2', 'e', 'phi']:
-                            seq += MPMATH_CACHE.get(f_name, mpmath.mp.__dict__[f_name]().__str__().replace('.', '')[:1000])[f_start:f_end]
+                            seq += MPMATH_CACHE.get(f_name, mpmath.mp.__dict__[f_name]().__str__().replace('.', '')[:500])[f_start:f_end]
                         elif f_name == 'sin':
-                            seq += ''.join('1' if mpmath.sin(n/100) > 0 else '0' for n in range(1000))[f_start:f_end]
+                            seq += ''.join('1' if mpmath.sin(n/100) > 0 else '0' for n in range(500))[f_start:f_end]
                         elif f_name == 'logistic':
                             x0 = float(parts[1])
-                            seq += logistic_map(x0, 3.9, 1000)[f_start:f_end]
+                            seq += logistic_map(x0, 3.9, 500)[f_start:f_end]
                         elif f_name == 'cf_sqrt2':
                             seq += continued_fraction(mpmath.mp.sqrt(2))[f_start:f_end]
                         elif f_name == 'fib_7':
-                            seq += fibonacci_modulo(7, 1000)[f_start:f_end]
+                            seq += fibonacci_modulo(7, 500)[f_start:f_end]
                 elif key.startswith('raw'):
                     seq = key.split('.')[1]
                 else:
@@ -391,18 +414,18 @@ def server_mode(dictionary, port=12345):
                         seq = format(int(f_start), '016b')
                     elif func.startswith('1/'):
                         p = int(func.split('/')[1])
-                        seq = get_prime_reciprocal(p, 1000)[f_start:f_end]
+                        seq = get_prime_reciprocal(p, 500)[f_start:f_end]
                     elif func in ['pi', 'sqrt2', 'e', 'phi']:
-                        seq = MPMATH_CACHE.get(func, mpmath.mp.__dict__[func]().__str__().replace('.', '')[:1000])[f_start:f_end]
+                        seq = MPMATH_CACHE.get(func, mpmath.mp.__dict__[func]().__str__().replace('.', '')[:500])[f_start:f_end]
                     elif func == 'sin':
-                        seq = ''.join('1' if mpmath.sin(n/100) > 0 else '0' for n in range(1000))[f_start:f_end]
+                        seq = ''.join('1' if mpmath.sin(n/100) > 0 else '0' for n in range(500))[f_start:f_end]
                     elif func == 'logistic':
                         x0 = float(parts[1])
-                        seq = logistic_map(x0, 3.9, 1000)[f_start:f_end]
+                        seq = logistic_map(x0, 3.9, 500)[f_start:f_end]
                     elif func == 'cf_sqrt2':
                         seq = continued_fraction(mpmath.mp.sqrt(2))[f_start:f_end]
                     elif func == 'fib_7':
-                        seq = fibonacci_modulo(7, 1000)[f_start:f_end]
+                        seq = fibonacci_modulo(7, 500)[f_start:f_end]
                 data_str.extend(seq.encode())
             data_str.extend(zlib.decompress(unmatched))
             
