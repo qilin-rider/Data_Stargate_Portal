@@ -21,7 +21,7 @@ except ImportError:
     IN_COLAB = False
 
 # Set mpmath precision
-mpmath.mp.dps = 500  # Reduced for speed
+mpmath.mp.dps = 500
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,
@@ -112,7 +112,7 @@ def fibonacci_modulo(p, n):
         logger.error(f"Error in fibonacci_modulo(p={p}): {e}")
         return "0" * n
 
-def build_dictionary(max_digits=500, chunk_sizes=[16, 32, 64, 128, 256, 512], timeout=60):
+def build_dictionary(max_digits=500, chunk_sizes=[16, 32], timeout=120):
     dictionary_file = 'dictionary.pkl'
     dictionary = defaultdict(lambda: defaultdict(list))
     start_time = time.time()
@@ -166,7 +166,7 @@ def build_dictionary(max_digits=500, chunk_sizes=[16, 32, 64, 128, 256, 512], ti
     # Transcendental sequences
     for p in primes:
         seq = get_prime_reciprocal(p, max_digits)
-        for i in range(0, min(100, len(seq) - 16 + 1), 16):  # Limit to 100
+        for i in range(0, min(100, len(seq) - 16 + 1), 16):
             chunk = seq[i:i+16]
             dictionary[16][chunk].append(f"1/{p}.{i}.{i+16}")
         elapsed = time.time() - start_time
@@ -190,11 +190,34 @@ def build_dictionary(max_digits=500, chunk_sizes=[16, 32, 64, 128, 256, 512], ti
             logger.warning(f"Timeout reached during {func_name} sequences.")
             break
     
+    # Build 32-bit dictionary
+    num_16bit = 32 // 16
+    base_chunks = list(dictionary[16].keys())
+    for i in range(min(10, len(base_chunks))):
+        for combo in itertools.combinations_with_replacement(base_chunks[:10], num_16bit):
+            chunk = ''.join(combo)
+            if len(chunk) == 32:
+                keys = [dictionary[16][c][0] for c in combo]
+                dictionary[32][chunk].append(f"concat.{'|'.join(keys)}")
+            elapsed = time.time() - start_time
+            if elapsed - last_log >= 0.5:
+                cpu = psutil.cpu_percent()
+                mem = psutil.virtual_memory().percent
+                total_chunks = sum(len(v) for v in dictionary.values())
+                logger.info(f"Chunk Size 32: {total_chunks} chunks, {elapsed:.2f}s, CPU: {cpu}%, Mem: {mem}%")
+                print(f"Building 32-bit: {total_chunks} chunks, {elapsed:.2f}s")
+                last_log = elapsed
+            if elapsed > timeout:
+                logger.warning("Timeout reached during 32-bit sequences.")
+                break
+        if elapsed > timeout:
+            break
+    
     # Save dictionary
     try:
         with open(dictionary_file, 'wb') as f:
             pickle.dump(dictionary, f)
-        logger.info(f"Saved dictionary to {dictionary_file} with {len(dictionary[16])} 16-bit chunks.")
+        logger.info(f"Saved dictionary to {dictionary_file} with {sum(len(v) for v in dictionary.values())} chunks.")
         print(f"Saved dictionary to {dictionary_file}")
         if IN_COLAB:
             files.download(dictionary_file)
@@ -202,46 +225,6 @@ def build_dictionary(max_digits=500, chunk_sizes=[16, 32, 64, 128, 256, 512], ti
         logger.error(f"Error saving dictionary: {e}")
     
     report_dictionary(dictionary)
-    
-    # Generate larger sequences (on-the-fly, limited)
-    for chunk_size in chunk_sizes[1:]:
-        if chunk_size % 16 != 0:
-            continue
-        num_16bit = chunk_size // 16
-        base_chunks = list(dictionary[16].keys())
-        for i in range(min(50, len(base_chunks))):  # Reduced to prevent overload
-            for combo in itertools.combinations_with_replacement(base_chunks[:50], num_16bit):
-                chunk = ''.join(combo)
-                if len(chunk) == chunk_size:
-                    keys = [dictionary[16][c][0] for c in combo]
-                    dictionary[chunk_size][chunk].append(f"concat.{'|'.join(keys)}")
-                elapsed = time.time() - start_time
-                if elapsed - last_log >= 1:
-                    cpu = psutil.cpu_percent()
-                    mem = psutil.virtual_memory().percent
-                    total_chunks = sum(len(v) for v in dictionary.values())
-                    logger.info(f"Chunk Size {chunk_size}: {total_chunks} chunks, {elapsed:.2f}s, CPU: {cpu}%, Mem: {mem}%")
-                    print(f"Building {chunk_size}-bit: {total_chunks} chunks, {elapsed:.2f}s")
-                    last_log = elapsed
-                if elapsed > timeout:
-                    logger.warning(f"Timeout reached during {chunk_size}-bit sequences.")
-                    break
-            if elapsed > timeout:
-                break
-    
-    elapsed = time.time() - start_time
-    total_chunks = sum(len(v) for v in dictionary.values())
-    logger.info(f"Dictionary setup: {elapsed:.2f}s, Chunks: {total_chunks}")
-    
-    # Save dictionary
-    try:
-        with open(dictionary_file, 'wb') as f:
-            pickle.dump(dictionary, f)
-        if IN_COLAB:
-            files.download(dictionary_file)
-    except Exception as e:
-        logger.error(f"Error saving dictionary: {e}")
-    
     return dictionary
 
 def report_dictionary(dictionary):
@@ -278,16 +261,15 @@ def find_matches(data_str, dictionary, chunk_size=512):
         
         # Fractal search (16-bit hierarchy)
         found = False
-        if chunk_size > 16:
-            num_16bit = chunk_size // 16
-            base_chunks = list(dictionary[16].keys())
-            for combo in itertools.combinations_with_replacement(base_chunks, num_16bit):
-                candidate = ''.join(combo)
-                if candidate == chunk:
-                    keys = [dictionary[16][c][0] for c in combo]
-                    matches.append((f"concat.{'|'.join(keys)}", i, i+chunk_size))
-                    found = True
-                    break
+        num_16bit = chunk_size // 16
+        base_chunks = list(dictionary[16].keys())
+        for combo in itertools.combinations_with_replacement(base_chunks, num_16bit):
+            candidate = ''.join(combo)
+            if candidate == chunk:
+                keys = [dictionary[16][c][0] for c in combo]
+                matches.append((f"concat.{'|'.join(keys)}", i, i+chunk_size))
+                found = True
+                break
         if found:
             i += chunk_size
         else:
@@ -433,6 +415,8 @@ def server_mode(dictionary, port=12345):
             with open(output_file, 'wb') as f:
                 f.write(data_str)
             print(f"File received and saved as {output_file}")
+            if IN_COLAB:
+                files.download(output_file)
     except Exception as e:
         logger.error(f"Error in server_mode: {e}")
 
@@ -455,6 +439,21 @@ def client_mode(dictionary, file_path, host='localhost', port=12345):
     except Exception as e:
         logger.error(f"Error in client_mode: {e}")
 
+def test_compression_files(dictionary, test_files):
+    for file_path in test_files:
+        if not Path(file_path).exists():
+            logger.error(f"Test file {file_path} not found.")
+            print(f"Test file {file_path} not found.")
+            continue
+        try:
+            with open(file_path, 'rb') as f:
+                data = f.read()
+            matches, unmatched, compressed_size, ratio = compress_and_evaluate(data, dictionary, log_file='stargate_log.txt')
+            logger.info(f"Tested {file_path}: Ratio={ratio:.2f}, Compressed={compressed_size} bytes")
+            print(f"Tested {file_path}: Ratio={ratio:.2f}, Compressed={compressed_size} bytes")
+        except Exception as e:
+            logger.error(f"Error testing {file_path}: {e}")
+
 def main():
     try:
         with open('stargate_log.txt', 'w') as f:
@@ -463,7 +462,7 @@ def main():
         print("Building/loading dictionary...")
         dictionary = build_dictionary()
         
-        mode = input("Enter mode (c for compression only, t for transfer): ").strip().lower()
+        mode = input("Enter mode (c for compression only, t for transfer, test for file testing): ").strip().lower()
         
         if mode == 'c':
             file_path = select_file()
@@ -489,6 +488,16 @@ def main():
             else:
                 print("Invalid transfer mode, exiting.")
                 logger.error("Invalid transfer mode.")
+        
+        elif mode == 'test':
+            test_files = [
+                'image.jpg',  # ~10MB JPEG
+                'document.txt',  # ~10MB text
+                'audio.wav',  # ~10MB audio
+                'video.mp4',  # ~10MB video
+                'data.bin'  # ~10MB binary
+            ]
+            test_compression_files(dictionary, test_files)
         
         else:
             print("Invalid mode, exiting.")
